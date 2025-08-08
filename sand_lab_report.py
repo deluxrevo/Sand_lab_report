@@ -1,5 +1,3 @@
-# sand_lab_report.py
-
 import streamlit as st
 import pandas as pd
 import qrcode
@@ -52,6 +50,7 @@ def generate_qr(data_str: str) -> Image.Image:
 def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     """
     Build PDF report embedding QR code and using a Unicode font.
+    Always returns bytes, compatible with Streamlit download_button.
     """
     pdf = FPDF()
     pdf.add_page()
@@ -84,12 +83,15 @@ def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
             continue
         pdf.cell(0, 8, f"{key}: {val}", ln=1)
 
-    # fpdf2.output(dest="S") now returns bytes, so avoid double-encoding
+    # fpdf.output(dest="S") returns str (latin-1) in fpdf1 and str or bytes in fpdf2
     pdf_bytes = pdf.output(dest="S")
     if isinstance(pdf_bytes, str):
-        return pdf_bytes.encode("latin-1")
+        pdf_bytes = pdf_bytes.encode("latin-1")
+    elif isinstance(pdf_bytes, bytes):
+        pass
+    else:
+        pdf_bytes = bytes(pdf_bytes)
     return pdf_bytes
-
 
 # -------- Session State --------
 
@@ -195,6 +197,9 @@ if not st.session_state.history.empty:
 
         if st.button("📑 Export PDF"):
             pdf_bytes = generate_pdf(st.session_state.last, st.session_state.last_qr)
+            # Always ensure bytes
+            if isinstance(pdf_bytes, str):
+                pdf_bytes = pdf_bytes.encode("latin-1")
             st.download_button(
                 "⬇ Download PDF",
                 data=pdf_bytes,
