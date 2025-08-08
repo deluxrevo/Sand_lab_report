@@ -47,10 +47,63 @@ def generate_qr(data_str: str) -> Image.Image:
     qr.make(fit=True)
     return qr.make_image(fill_color="black", back_color="white")
 
+# -------- Technical Analysis Function --------
+
+def sand_technical_analysis(sample: dict) -> (str, str):
+    """
+    Analyze sand quality against typical mortar sand norms.
+    Returns (verdict, detailed_analysis)
+    """
+    verdicts = []
+    notes = []
+
+    # Typical norms (adapt as needed)
+    norms = {
+        "Granulation 0–0.2 mm (%)": (0, 20),    # Fine fraction, not too high
+        "Granulation 0.2–0.4 mm (%)": (10, 70), # Main fraction
+        "Passing <0.4 mm (%)": (60, 100),       # Fines for mortar
+        "Humidity (%)": (0, 5),                 # Should be low for storage
+        "MB Index (g/100 g)": (0, 1.5),         # Low clay content
+        "ES (%)": (75, 100),                    # Cleanliness
+    }
+
+    verdict = "PASS"
+    for key, (low, high) in norms.items():
+        val = sample.get(key)
+        if val is None:
+            verdicts.append(f"{key}: Not measured.")
+            continue
+        if val < low:
+            verdicts.append(f"{key} below norm ({val} < {low})")
+            verdict = "FAIL"
+        elif val > high:
+            verdicts.append(f"{key} above norm ({val} > {high})")
+            verdict = "FAIL"
+        else:
+            verdicts.append(f"{key}: OK ({val})")
+
+    explanation = (
+        "Technical Analysis against mortar sand norms:\n" +
+        "\n".join(verdicts) + "\n\n"
+    )
+    if verdict == "PASS":
+        explanation += (
+            "The sand sample meets all standard requirements for use in mortar production. "
+            "It is suitable for high-quality mortar mixes."
+        )
+    else:
+        explanation += (
+            "The sand sample does NOT meet all requirements for standard mortar. "
+            "Refer to the above parameter(s) for details."
+        )
+    return verdict, explanation
+
+# -------- PDF Generation --------
+
 def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     """
     Build PDF report embedding QR code and using a Unicode font.
-    Always returns bytes, compatible with Streamlit download_button.
+    Now includes a technical analysis section.
     """
     pdf = FPDF()
     pdf.add_page()
@@ -66,6 +119,15 @@ def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     pdf.cell(0, 8, f"Date: {sample_data['Date']}", ln=1)
     pdf.ln(5)
 
+    # Technical analysis
+    verdict, analysis = sand_technical_analysis(sample_data)
+    pdf.set_font("DejaVu", size=11, style="B")
+    pdf.cell(0, 8, f"Technical Verdict: {verdict}", ln=1)
+    pdf.set_font("DejaVu", size=9)
+    for line in analysis.splitlines():
+        pdf.multi_cell(0, 6, line)
+    pdf.ln(4)
+
     # Embed QR via a temporary PNG file
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     try:
@@ -76,14 +138,16 @@ def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
         tmp.close()
         os.unlink(tmp.name)
 
-    pdf.ln(15)
+    pdf.ln(10)
+    pdf.set_font("DejaVu", size=11)
+    pdf.cell(0, 8, "Test Results:", ln=1)
+    pdf.set_font("DejaVu", size=10)
     # Write out each field
     for key, val in sample_data.items():
         if key in ("Sample ID", "Date"):
             continue
         pdf.cell(0, 8, f"{key}: {val}", ln=1)
 
-    # fpdf.output(dest="S") returns str (latin-1) in fpdf1 and str or bytes in fpdf2
     pdf_bytes = pdf.output(dest="S")
     if isinstance(pdf_bytes, str):
         pdf_bytes = pdf_bytes.encode("latin-1")
@@ -197,7 +261,6 @@ if not st.session_state.history.empty:
 
         if st.button("📑 Export PDF"):
             pdf_bytes = generate_pdf(st.session_state.last, st.session_state.last_qr)
-            # Always ensure bytes
             if isinstance(pdf_bytes, str):
                 pdf_bytes = pdf_bytes.encode("latin-1")
             st.download_button(
