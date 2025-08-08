@@ -9,8 +9,9 @@ import uuid
 import tempfile
 import os
 
-# Path to a TrueType font on your system; adjust if necessary
+# Paths to TrueType fonts (regular and bold) for PDF
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_PATH_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 # -------- Calculation Functions --------
 
@@ -55,8 +56,6 @@ def sand_technical_analysis(sample: dict) -> (str, str):
     Returns (verdict, detailed_analysis)
     """
     verdicts = []
-    notes = []
-
     # Typical norms (adapt as needed)
     norms = {
         "Granulation 0–0.2 mm (%)": (0, 20),    # Fine fraction, not too high
@@ -72,6 +71,7 @@ def sand_technical_analysis(sample: dict) -> (str, str):
         val = sample.get(key)
         if val is None:
             verdicts.append(f"{key}: Not measured.")
+            verdict = "FAIL"
             continue
         if val < low:
             verdicts.append(f"{key} below norm ({val} < {low})")
@@ -108,13 +108,15 @@ def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     pdf = FPDF()
     pdf.add_page()
 
-    # Register DejaVu (or any TTF) to avoid encoding issues
+    # Register regular and bold fonts
     pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
-    pdf.set_font("DejaVu", size=12)
+    pdf.add_font("DejaVu", "B", FONT_PATH_BOLD, uni=True)
 
     # Header
+    pdf.set_font("DejaVu", size=12)
     pdf.cell(0, 10, "Clay & Sand Test Report", ln=1, align='C')
     pdf.ln(2)
+    pdf.set_font("DejaVu", size=10)
     pdf.cell(0, 8, f"Sample ID: {sample_data['Sample ID']}", ln=1)
     pdf.cell(0, 8, f"Date: {sample_data['Date']}", ln=1)
     pdf.ln(5)
