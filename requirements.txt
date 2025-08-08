@@ -1,5 +1,5 @@
 streamlit
 pandas
-qrcode
-fpdf
-pillow
+fpdf2
+qrcode[pil]
+Pillow
