@@ -1,20 +1,22 @@
-# clay_sand_lab_app.py
+# sand_lab_report.py
 
 import streamlit as st
 import pandas as pd
 import qrcode
 from fpdf import FPDF
 from io import BytesIO
+from PIL import Image
 import datetime
 import uuid
-from PIL import Image
+import tempfile
+import os
 
 # -------- Calculation Functions --------
 
 def calculate_es(ATB: float, ATK: float) -> float:
     """
     Equivalent Sand (ES %):
-    ES = 100 * (1 - ATB/ATK).
+    ES = 100 * (1 - ATB/ATK)
     """
     try:
         return round(100 * (1 - ATB / ATK), 2)
@@ -37,7 +39,7 @@ def calculate_granulation(init_mass, r02, r04):
 
 def calculate_humidity(wet, dry):
     """
-    Humidity (%) = 100 * (wet - dry) / dry.
+    Humidity (%) = 100 * (wet - dry) / dry
     """
     try:
         return round(100 * (wet - dry) / dry, 2)
@@ -63,7 +65,7 @@ def generate_qr(data_str: str) -> Image.Image:
 
 def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     """
-    Build PDF report embedding QR image.
+    Build PDF report embedding QR image via a temp file.
     """
     pdf = FPDF()
     pdf.add_page()
@@ -76,18 +78,22 @@ def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     pdf.cell(0, 8, f"Date: {sample_data['Date']}", ln=1)
     pdf.ln(5)
 
-    # Embed QR
-    buf = BytesIO()
-    qr_img.save(buf, format="PNG")
-    buf.seek(0)
-    pdf.image(buf, x=160, y=20, w=30)
-    pdf.ln(15)
+    # Save QR to a temp PNG file
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    try:
+        qr_img.save(tmp, format="PNG")
+        tmp.flush()
+        pdf.image(tmp.name, x=160, y=20, w=30)
+    finally:
+        tmp.close()
+        os.unlink(tmp.name)
 
+    pdf.ln(15)
     # Results
-    for k, v in sample_data.items():
-        if k in ("Sample ID", "Date"):
+    for key, val in sample_data.items():
+        if key in ("Sample ID", "Date"):
             continue
-        pdf.cell(0, 8, f"{k}: {v}", ln=1)
+        pdf.cell(0, 8, f"{key}: {val}", ln=1)
 
     return pdf.output(dest="S").encode("latin-1")
 
@@ -101,7 +107,7 @@ if "history" not in st.session_state:
 
 st.title("🧪 Clay & Sand Testing Dashboard")
 
-# Step-by-step protocol
+# Protocol instructions
 st.markdown("## 📋 Step-by-Step Protocol")
 st.markdown("""
 1. **Sample Prep**  
@@ -109,22 +115,22 @@ st.markdown("""
    • Record “Initial Sample Mass.”
 
 2. **Equivalent Sand (ES) Test**  
-   • Prepare sample and kaolin control in water.  
-   • Measure turbidity after 10 min: ATB (sample), ATK (control).  
+   • Mix sample + control (kaolin) in distilled water.  
+   • After 10 min, measure turbidity: ATB (sample), ATK (control).  
    • ES = 100 × (1 – ATB/ATK).
 
 3. **Granulation (Sieving)**  
    • Sieve through 0.2 mm & 0.4 mm.  
    • Weigh retained fractions.  
-   • % Retained = (mass_retained / initial_mass) × 100.
+   • % retained = (mass_retained / initial_mass) × 100.
 
 4. **Humidity**  
    • Weigh wet sample.  
    • Dry at 105 °C to constant mass.  
-   • Humidity (%) = (wet – dry)/dry × 100.
+   • Humidity (%) = (wet – dry) / dry × 100.
 
 5. **Methylene Blue Test**  
-   • Pipette MB solution (known concentration) dropwise into sand-water mix on filter paper until faint blue ring remains.  
+   • Add MB solution dropwise to sand–water slurry on filter paper until faint blue ring.  
    • Record volume added (mL).  
    • MB Index (g/100 g) = (vol_mL × conc_g/L ÷ 1000) / sample_g × 100.
 """)
@@ -132,11 +138,11 @@ st.markdown("""
 with st.sidebar:
     st.header("🔧 Inputs")
 
-    # Sample meta
+    # Meta
     sample_id = st.text_input("Sample ID", value=str(uuid.uuid4())[:8])
     date = st.date_input("Test Date", value=datetime.date.today())
 
-    # ES inputs
+    # ES Test
     st.subheader("ES Test")
     atb = st.number_input("Sample Turbidity ATB (NTU)", value=50.0, step=0.1)
     atk = st.number_input("Control Turbidity ATK (NTU)", value=200.0, step=0.1)
@@ -156,7 +162,7 @@ with st.sidebar:
     st.subheader("Methylene Blue")
     mb_vol = st.number_input("MB Volume (mL)", value=10.0, step=0.1)
     mb_conc = st.number_input("MB Conc. (g/L)", value=1.95, step=0.01)
-    mb_g_sample = st.number_input("MB Sample Mass (g)", value=10.0, step=0.1)
+    mb_g_sample = st.number_input("Sample Mass (g)", value=10.0, step=0.1)
 
     # Observations
     st.subheader("Observations")
@@ -167,13 +173,13 @@ with st.sidebar:
     run = st.button("🧪 Run & Save")
 
 if run:
-    # Calculate metrics
+    # Compute metrics
     es = calculate_es(atb, atk)
     p02, p04, pass04 = calculate_granulation(init_mass, r02, r04)
     hum = calculate_humidity(wet, dry)
     mb_idx = calculate_mb_index(mb_vol, mb_conc, mb_g_sample)
 
-    # Record
+    # Record entry
     rec = {
         "Sample ID": sample_id,
         "Date": date.isoformat(),
@@ -197,9 +203,9 @@ if run:
     )
     st.session_state.last = rec
     st.session_state.last_qr = qr_img
-    st.success(f"Saved sample {sample_id}")
+    st.success(f"Sample {sample_id} saved!")
 
-# Display history & exports
+# Display history and exports
 if not st.session_state.history.empty:
     st.subheader("📒 Batch History")
     st.dataframe(st.session_state.history)
@@ -209,17 +215,15 @@ if not st.session_state.history.empty:
 
     if "last" in st.session_state:
         st.subheader(f"📄 Last Sample: {st.session_state.last['Sample ID']}")
-
-        # Render QR from PIL to bytes
-        buf_qr = BytesIO()
-        st.session_state.last_qr.save(buf_qr, format="PNG")
-        st.image(buf_qr.getvalue(), width=100, caption="QR Code")
+        buf = BytesIO()
+        st.session_state.last_qr.save(buf, format="PNG")
+        st.image(buf.getvalue(), width=100, caption="QR Code")
 
         if st.button("📑 Export PDF"):
             pdf_bytes = generate_pdf(st.session_state.last, st.session_state.last_qr)
             st.download_button(
-                "⬇ Download PDF", pdf_bytes,
-                f"Report_{st.session_state.last['Sample ID']}.pdf",
-                "application/pdf"
+                "⬇ Download PDF",
+                data=pdf_bytes,
+                file_name=f"Report_{st.session_state.last['Sample ID']}.pdf",
+                mime="application/pdf"
             )
-
