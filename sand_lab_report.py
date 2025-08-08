@@ -11,9 +11,8 @@ import uuid
 import tempfile
 import os
 
-# Path to a TrueType font on your system; DejaVu Sans is usually present on Linux hosts.
+# Path to a TrueType font on your system; adjust if necessary
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-
 
 # -------- Calculation Functions --------
 
@@ -50,15 +49,14 @@ def generate_qr(data_str: str) -> Image.Image:
     qr.make(fit=True)
     return qr.make_image(fill_color="black", back_color="white")
 
-
 def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     """
-    Build a PDF report with a Unicode-capable font.
+    Build PDF report embedding QR code and using a Unicode font.
     """
     pdf = FPDF()
     pdf.add_page()
 
-    # Register a TTF that supports Unicode
+    # Register DejaVu (or any TTF) to avoid encoding issues
     pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
     pdf.set_font("DejaVu", size=12)
 
@@ -69,7 +67,7 @@ def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
     pdf.cell(0, 8, f"Date: {sample_data['Date']}", ln=1)
     pdf.ln(5)
 
-    # Embed QR code via temporary PNG file
+    # Embed QR via a temporary PNG file
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     try:
         qr_img.save(tmp, format="PNG")
@@ -80,22 +78,23 @@ def generate_pdf(sample_data: dict, qr_img: Image.Image) -> bytes:
         os.unlink(tmp.name)
 
     pdf.ln(15)
-
-    # Results table
+    # Write out each field
     for key, val in sample_data.items():
         if key in ("Sample ID", "Date"):
             continue
-        # Using DejaVu lets us avoid encoding exceptions
         pdf.cell(0, 8, f"{key}: {val}", ln=1)
 
-    return pdf.output(dest="S").encode("latin-1")
+    # fpdf2.output(dest="S") now returns bytes, so avoid double-encoding
+    pdf_bytes = pdf.output(dest="S")
+    if isinstance(pdf_bytes, str):
+        return pdf_bytes.encode("latin-1")
+    return pdf_bytes
 
 
 # -------- Session State --------
 
 if "history" not in st.session_state:
     st.session_state.history = pd.DataFrame()
-
 
 # -------- App UI --------
 
@@ -115,8 +114,8 @@ st.markdown("""
    • Weigh wet, dry at 105 °C to constant mass.  
    • Humidity % = (wet – dry)/dry × 100.  
 5. **Methylene Blue**  
-   • Add MB solution dropwise until faint ring on filter paper.  
-   • MB Index = (vol mL × conc g/L ÷ 1000) / sample_g × 100.
+   • Add MB solution dropwise until faint ring appears on filter paper.  
+   • MB Index = (vol mL × conc g/L ÷ 1000) / sample g × 100.
 """)
 
 with st.sidebar:
@@ -126,22 +125,22 @@ with st.sidebar:
     date = st.date_input("Test Date", datetime.date.today())
 
     st.subheader("ES Test")
-    atb = st.number_input("ATB (NTU)", 0.0, 1000.0, 50.0, 0.1)
-    atk = st.number_input("ATK (NTU)", 0.0, 1000.0, 200.0, 0.1)
+    atb = st.number_input("ATB (NTU)", value=50.0, step=0.1)
+    atk = st.number_input("ATK (NTU)", value=200.0, step=0.1)
 
     st.subheader("Granulation")
-    init_mass = st.number_input("Init. Mass (g)", 0.0, 1000.0, 100.0, 0.1)
-    r02 = st.number_input("Ret. 0–0.2 mm (g)", 0.0, 1000.0, 30.0, 0.1)
-    r04 = st.number_input("Ret. 0.2–0.4 mm (g)", 0.0, 1000.0, 50.0, 0.1)
+    init_mass = st.number_input("Initial Mass (g)", value=100.0, step=0.1)
+    r02 = st.number_input("Retained 0–0.2 mm (g)", value=30.0, step=0.1)
+    r04 = st.number_input("Retained 0.2–0.4 mm (g)", value=50.0, step=0.1)
 
     st.subheader("Humidity")
-    wet = st.number_input("Wet Mass (g)", 0.0, 1000.0, 105.0, 0.1)
-    dry = st.number_input("Dry Mass (g)", 0.0, 1000.0, 100.0, 0.1)
+    wet = st.number_input("Wet Mass (g)", value=105.0, step=0.1)
+    dry = st.number_input("Dry Mass (g)", value=100.0, step=0.1)
 
     st.subheader("Methylene Blue")
-    mb_vol = st.number_input("Volume (mL)", 0.0, 500.0, 10.0, 0.1)
-    mb_conc = st.number_input("Conc. (g/L)", 0.0, 10.0, 1.95, 0.01)
-    mb_g = st.number_input("Sample Mass (g)", 0.0, 500.0, 10.0, 0.1)
+    mb_vol = st.number_input("Volume (mL)", value=10.0, step=0.1)
+    mb_conc = st.number_input("Conc. (g/L)", value=1.95, step=0.01)
+    mb_g = st.number_input("Sample Mass (g)", value=10.0, step=0.1)
 
     st.subheader("Observations")
     color = st.text_input("Color")
@@ -149,7 +148,6 @@ with st.sidebar:
     notes = st.text_area("Notes")
 
     run = st.button("🧪 Run & Save")
-
 
 if run:
     es   = calculate_es(atb, atk)
@@ -178,17 +176,16 @@ if run:
         [st.session_state.history, pd.DataFrame([rec])],
         ignore_index=True
     )
-    st.session_state.last    = rec
+    st.session_state.last   = rec
     st.session_state.last_qr = qr_img
     st.success(f"Saved Sample {sample_id}")
-
 
 if not st.session_state.history.empty:
     st.subheader("📒 Batch History")
     st.dataframe(st.session_state.history)
 
     csv = st.session_state.history.to_csv(index=False).encode()
-    st.download_button("⬇ Download CSV", csv, "batch.csv", "text/csv")
+    st.download_button("⬇ Download CSV", csv, "batch_history.csv", "text/csv")
 
     if "last" in st.session_state:
         st.subheader(f"📄 Last Sample: {st.session_state.last['Sample ID']}")
