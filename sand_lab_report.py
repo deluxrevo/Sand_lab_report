@@ -42,6 +42,25 @@ def calculate_mb_index(volume_ml, conc_g_per_l, sample_g):
     except ZeroDivisionError:
         return None
 
+def calculate_final_clay_percent(A_mass: float, CA_percent: float, B_mass: float, CB_percent: float):
+    """
+    Weighted average to estimate final clay percentage after adding clean sand.
+
+    Final Clay % = ((A * C_A) + (B * C_B)) / (A + B)
+
+    A_mass: mass of current sand (g)
+    CA_percent: clay content of current sand (%)
+    B_mass: mass of clean sand added (g)
+    CB_percent: clay content of clean sand (%)
+    """
+    total = (A_mass or 0) + (B_mass or 0)
+    if total <= 0:
+        return None
+    try:
+        return round(((A_mass * CA_percent) + (B_mass * CB_percent)) / total, 2)
+    except Exception:
+        return None
+
 def generate_qr(data_str: str) -> Image.Image:
     qr = qrcode.QRCode(box_size=4, border=1)
     qr.add_data(data_str)
@@ -183,7 +202,10 @@ st.markdown("""
    • Humidity % = (wet – dry)/dry × 100.  
 5. **Methylene Blue**  
    • Add MB solution dropwise until faint ring appears on filter paper.  
-   • MB Index = (vol mL × conc g/L ÷ 1000) / sample g × 100.
+   • MB Index = (vol mL × conc g/L ÷ 1000) / sample g × 100.  
+6. **Blend Ratio (Final Clay %)**  
+   • Estimate final clay % after adding clean sand:  
+   • Final Clay % = ((A × C_A) + (B × C_B)) / (A + B), where A/B are masses (g) and C_A/C_B are %.
 """)
 
 with st.sidebar:
@@ -193,22 +215,28 @@ with st.sidebar:
     date = st.date_input("Test Date", datetime.date.today())
 
     st.subheader("ES Test")
-    atb = st.number_input("ATB (NTU)", value=50.0, step=0.1)
-    atk = st.number_input("ATK (NTU)", value=200.0, step=0.1)
+    atb = st.number_input("ATB (NTU)", value=50.0, step=0.1, min_value=0.0)
+    atk = st.number_input("ATK (NTU)", value=200.0, step=0.1, min_value=0.0)
 
     st.subheader("Granulation")
-    init_mass = st.number_input("Initial Mass (g)", value=100.0, step=0.1)
-    r02 = st.number_input("Retained 0–0.2 mm (g)", value=30.0, step=0.1)
-    r04 = st.number_input("Retained 0.2–0.4 mm (g)", value=50.0, step=0.1)
+    init_mass = st.number_input("Initial Mass (g)", value=100.0, step=0.1, min_value=0.0)
+    r02 = st.number_input("Retained 0–0.2 mm (g)", value=30.0, step=0.1, min_value=0.0)
+    r04 = st.number_input("Retained 0.2–0.4 mm (g)", value=50.0, step=0.1, min_value=0.0)
 
     st.subheader("Humidity")
     wet = st.number_input("Wet Mass (g)", value=105.0, step=0.1)
-    dry = st.number_input("Dry Mass (g)", value=100.0, step=0.1)
+    dry = st.number_input("Dry Mass (g)", value=100.0, step=0.1, min_value=0.0)
 
     st.subheader("Methylene Blue")
-    mb_vol = st.number_input("Volume (mL)", value=10.0, step=0.1)
-    mb_conc = st.number_input("Conc. (g/L)", value=1.95, step=0.01)
-    mb_g = st.number_input("Sample Mass (g)", value=10.0, step=0.1)
+    mb_vol = st.number_input("Volume (mL)", value=10.0, step=0.1, min_value=0.0)
+    mb_conc = st.number_input("Conc. (g/L)", value=1.95, step=0.01, min_value=0.0)
+    mb_g = st.number_input("Sample Mass (g)", value=10.0, step=0.1, min_value=0.0)
+
+    st.subheader("Blend Ratio (Final Clay %)")
+    A_mass = st.number_input("A: Mass of current sand (g)", value=100.0, step=0.1, min_value=0.0)
+    CA_percent = st.number_input("C_A: Clay content of current sand (%)", value=2.0, step=0.01, min_value=0.0, max_value=100.0)
+    B_mass = st.number_input("B: Mass of clean sand to add (g)", value=0.0, step=0.1, min_value=0.0)
+    CB_percent = st.number_input("C_B: Clay content of clean sand (%)", value=0.5, step=0.01, min_value=0.0, max_value=100.0)
 
     st.subheader("Observations")
     color = st.text_input("Color")
@@ -222,6 +250,7 @@ if run:
     p02, p04, p_pass = calculate_granulation(init_mass, r02, r04)
     hum  = calculate_humidity(wet, dry)
     mb_i = calculate_mb_index(mb_vol, mb_conc, mb_g)
+    final_clay = calculate_final_clay_percent(A_mass, CA_percent, B_mass, CB_percent)
 
     rec = {
         "Sample ID": sample_id,
@@ -232,6 +261,13 @@ if run:
         "Passing <0.4 mm (%)": p_pass,
         "Humidity (%)": hum,
         "MB Index (g/100 g)": mb_i,
+        # Blend ratio inputs and result
+        "Blend A Mass (g)": A_mass,
+        "Blend A Clay (%)": CA_percent,
+        "Blend B Mass (g)": B_mass,
+        "Blend B Clay (%)": CB_percent,
+        "Final Clay (%)": final_clay,
+        # Observations
         "Color": color,
         "Odor": odor,
         "Notes": notes
