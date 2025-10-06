@@ -19,14 +19,10 @@ class AppConfig:
     FONT_PATH: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     FONT_PATH_BOLD: str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-    # Standardized mineral capacities as requested
     MINERAL_CAPACITY: Dict[str, int] = field(default_factory=lambda: {
-        "Smectite": 250,
-        "Illite": 80,
-        "Kaolinite": 25,
+        "Smectite": 250, "Illite": 80, "Kaolinite": 25,
     })
 
-    # Flexible product profiles with specific norms
     PRODUCT_PROFILES: Dict[str, Dict[str, Tuple[float, float]]] = field(default_factory=lambda: {
         "Self-leveling": {
             "Passing <0.4 mm (%)": (70, 100),
@@ -73,11 +69,9 @@ class SandAnalysis:
 
     @staticmethod
     def perform_full_analysis(inputs: SampleData, config: AppConfig) -> AnalysisResult:
-        """Main function to run all calculations and validations."""
         results = {}
         reason_codes = []
 
-        # --- 1. Data Integrity Checks (Hard Failures) ---
         if inputs.init_mass <= 0:
             reason_codes.append("INTEGRITY_FAIL: Initial Mass must be > 0.")
         if inputs.r02_mass + inputs.r04_mass > inputs.init_mass:
@@ -85,16 +79,17 @@ class SandAnalysis:
         if not (0 <= inputs.fines_pct <= 100):
             reason_codes.append("INTEGRITY_FAIL: Fines must be between 0 and 100%.")
         
-        # If any integrity checks fail, return RED verdict immediately.
         if reason_codes:
             return AnalysisResult(results, "RED", reason_codes)
 
-        # --- 2. Primary Calculations ---
-        p02_pct = round(100 * inputs.r02_mass / inputs.init_mass, 2)
-        p04_pct = round(100 * inputs.r04_mass / inputs.init_mass, 2)
+        p02_mass_retained_as_pct = round(100 * inputs.r02_mass / inputs.init_mass, 2)
+        p04_mass_retained_as_pct = round(100 * inputs.r04_mass / inputs.init_mass, 2)
         
-        # Auto-calculate Passing <0.4 mm
-        passing_04_pct = round(p02_pct + p04_pct, 2)
+        # This is the material that passed the 0.4mm sieve but was retained on the 0.2mm sieve.
+        # This seems to be a misunderstanding in my previous code.
+        # Let's assume r02_mass is for 0.2-0.4mm and r04_mass is >0.4mm
+        # Then Passing < 0.4mm is 100 - (r04_mass_%)
+        passing_04_pct = round(100 - p04_mass_retained_as_pct, 2)
 
         results["Passing <0.4 mm (%)"] = passing_04_pct
         results["Fines (<0.063 mm) (%)"] = inputs.fines_pct
@@ -102,26 +97,21 @@ class SandAnalysis:
         mbv = SandAnalysis._calculate_mbv(inputs.mb_vol, inputs.mb_conc_mg_per_ml, inputs.mb_sample_mass)
         results["MBV (mg/g)"] = mbv
 
-        # Calculate clay content range
         clay_range = {}
         for mineral, capacity in config.MINERAL_CAPACITY.items():
             clay_range[mineral] = SandAnalysis._estimate_whole_sand_clay(mbv, capacity, inputs.fines_pct)
         
         results["Clay Content Range (%)"] = {k: v for k, v in clay_range.items()}
-        # Use worst-case (Kaolinite) for verdict checks
         worst_case_clay = clay_range.get("Kaolinite")
         results["Whole-Sand Clay Content (%)"] = worst_case_clay
 
-        # --- 3. Specification Compliance Checks (Amber/Green Verdicts) ---
         profile_norms = config.PRODUCT_PROFILES.get(inputs.product_profile, {})
-        
         for key, (low, high) in profile_norms.items():
             val = results.get(key)
             if val is not None and not (low <= val <= high):
                 reason_codes.append(f"SPEC_FAIL: '{key}' ({val}) is outside the profile norm ({low}-{high}).")
 
         verdict = "AMBER" if reason_codes else "GREEN"
-        
         return AnalysisResult(results, verdict, reason_codes)
 
     @staticmethod
@@ -131,13 +121,12 @@ class SandAnalysis:
 
     @staticmethod
     def _estimate_whole_sand_clay(mbv: float, mineral_capacity: int, fines_percent: float) -> float | None:
-        if mbv is None or fines_percent is None or mineral_capacity <= 0:
-            return None
+        if mbv is None or fines_percent is None or mineral_capacity <= 0: return None
         clay_in_fines = (mbv / mineral_capacity) * 100
         whole_sand_clay = clay_in_fines * (fines_percent / 100.0)
         return round(whole_sand_clay, 2)
 
-# --- PDF Generation & UI (Adapted from previous working versions) ---
+# --- PDF Generation & UI ---
 
 class PDFReport:
     """Handles the creation of the PDF report."""
@@ -173,13 +162,11 @@ class PDFReport:
         self.pdf.ln(5)
 
     def _add_results_table(self, results_dict: dict):
-        # ... (Implementation similar to previous versions, adapted for new dict format)
         self.pdf.set_font("DejaVu", "B", 12)
         self.pdf.cell(0, 10, "Detailed Results", ln=True)
         self.pdf.set_font("DejaVu", "", 10)
         for key, val in results_dict.items():
             self.pdf.cell(self.pdf.w * 0.5, 8, f"{key}:", border=1)
-            # Handle dictionary for clay range
             if isinstance(val, dict):
                 val_str = ", ".join(f"{k}: {v}%" for k, v in val.items())
             else:
@@ -200,17 +187,16 @@ def build_sidebar(config: AppConfig) -> tuple[SampleData | None, bool]:
         
         st.header("🔬 Test Inputs")
         with st.expander("Particle Size Distribution (PSD)", expanded=True):
-            init_mass = st.number_input("Initial Mass (g)", 100.0, 0.1, step=0.1)
-            r02_mass = st.number_input("Retained 0.2–0.4 mm (g)", 30.0, 0.0, step=0.1)
-            r04_mass = st.number_input("Retained >0.4 mm (g)", 20.0, 0.0, step=0.1) # Assuming this is the second sieve
-            
-            # This field is now crucial
-            fines_pct = st.number_input("Fines (<0.063 mm) (%)", 12.0, 0.0, 100.0, step=0.1)
+            # --- CORRECTED SECTION USING KEYWORD ARGUMENTS ---
+            init_mass = st.number_input("Initial Mass (g)", min_value=0.1, value=100.0, step=0.1)
+            r02_mass = st.number_input("Retained 0.2–0.4 mm (g)", min_value=0.0, value=30.0, step=0.1)
+            r04_mass = st.number_input("Retained >0.4 mm (g)", min_value=0.0, value=20.0, step=0.1)
+            fines_pct = st.number_input("Fines (<0.063 mm) (%)", min_value=0.0, max_value=100.0, value=12.0, step=0.1)
 
         with st.expander("Methylene Blue (MBV)", expanded=True):
-            mb_vol = st.number_input("MBV Volume (mL)", 1.0, 0.0, step=0.1)
-            mb_conc = st.number_input("MBV Conc. (mg/mL)", 19.5, 0.0, step=0.01)
-            mb_sample_mass = st.number_input("MBV Sample Mass (g)", 5.0, 0.1, step=0.1)
+            mb_vol = st.number_input("MBV Volume (mL)", min_value=0.0, value=1.0, step=0.1)
+            mb_conc = st.number_input("MBV Conc. (mg/mL)", min_value=0.0, value=19.5, step=0.01)
+            mb_sample_mass = st.number_input("MBV Sample Mass (g)", min_value=0.1, value=5.0, step=0.1)
 
         notes = st.text_area("Notes / Observations", "Standard sample.")
         run_button = st.button("🧪 Run Analysis", use_container_width=True)
@@ -228,7 +214,6 @@ def build_main_view():
         
         st.subheader(f"📄 Last Sample: {last_run['sample_info']['sample_id']}")
 
-        # Traffic Light Verdict Display
         color = analysis.verdict.lower()
         st.markdown(f"""
         <div style="background-color: {color}; padding: 10px; border-radius: 5px; color: white; text-align: center;">
@@ -236,7 +221,6 @@ def build_main_view():
         </div>
         """, unsafe_allow_html=True)
         
-        # Display reasons and suggestions
         with st.expander("Verdict Details & Recommendations", expanded=True):
             if analysis.verdict == "GREEN":
                 st.success("✅ Sample meets all specifications for the selected profile.")
@@ -245,17 +229,15 @@ def build_main_view():
                 st.markdown("**Reason Codes:**")
                 for code in analysis.reason_codes:
                     st.markdown(f"- `{code}`")
-                st.info("💡 **Suggestion:** Based on these results, a blend with sand from other silos may be necessary to meet the profile targets. *[Blend engine logic would be implemented here]*")
+                st.info("💡 **Suggestion:** A blend with sand from other silos may be necessary. *[Blend engine logic to be implemented here]*")
             elif analysis.verdict == "RED":
                 st.error("⛔️ Data integrity error. Please check your inputs.")
                 st.markdown("**Reason Codes:**")
                 for code in analysis.reason_codes:
                     st.markdown(f"- `{code}`")
         
-        # Display detailed results
         st.json(analysis.results_dict)
         
-        # Download button
         st.download_button(
             "⬇️ Download PDF Report",
             data=last_run['pdf_bytes'],
@@ -278,29 +260,29 @@ def main():
     inputs, run_pressed = build_sidebar(config)
     
     if run_pressed and inputs:
-        # Perform the new, advanced analysis
         analysis_result = SandAnalysis.perform_full_analysis(inputs, config)
         
-        # Prepare data for session state and PDF
         sample_info = {
             "sample_id": inputs.sample_id,
             "date": inputs.date,
             "product_profile": inputs.product_profile,
         }
         
-        # Generate PDF
         pdf_generator = PDFReport(config.FONT_PATH, config.FONT_PATH_BOLD)
         pdf_bytes = pdf_generator.generate(sample_info, analysis_result)
         
-        # Update session state
         st.session_state.last_run = {
             "sample_info": sample_info,
             "analysis_result": analysis_result,
             "pdf_bytes": pdf_bytes,
         }
 
-        # Update history (a simplified version for the table)
         history_record = {**sample_info, "Verdict": analysis_result.verdict, **analysis_result.results_dict}
+        # Flatten the clay range dict for better table display
+        if 'Clay Content Range (%)' in history_record and isinstance(history_record['Clay Content Range (%)'], dict):
+            clay_range = history_record.pop('Clay Content Range (%)')
+            history_record.update({f"Clay ({k})": v for k, v in clay_range.items()})
+
         st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([history_record])], ignore_index=True)
         
         st.rerun()
