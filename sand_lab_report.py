@@ -25,8 +25,16 @@ class AppConfig:
         "Granulation 0.2–0.4 mm (%)": (10, 70),
         "Passing <0.4 mm (%)": (60, 100),
         "Humidity (%)": (0, 5),
-        "MB Index (g/100 g)": (0, 1.5),
+        "Estimated Clay Content (%)": (0, 2.5), # Adjusted norm for clay content
         "ES (%)": (75, 100),
+    }
+    
+    # Cation Exchange Capacity (CEC) for different clay minerals in mg of MB per g of clay.
+    # This is the basis for converting MBV to a clay percentage.
+    MINERAL_CAPACITY = {
+        "Smectite": 100,  # High capacity (e.g., Montmorillonite)
+        "Illite": 40,      # Medium capacity
+        "Kaolinite": 15,   # Low capacity
     }
 
     @staticmethod
@@ -53,8 +61,9 @@ class SampleData:
     wet_mass: float
     dry_mass: float
     mb_vol: float
-    mb_conc: float
+    mb_conc_mg_per_ml: float # Concentration in mg/mL
     mb_sample_mass: float
+    mb_mineral_type: str
     blend_a_mass: float
     blend_a_clay_pct: float
     blend_b_mass: float
@@ -93,12 +102,27 @@ class SandAnalysis:
         return round(100 * (wet - dry) / dry, 2)
 
     @staticmethod
-    def calculate_mb_index(volume_ml: float, conc_g_per_l: float, sample_g: float) -> float | None:
-        """Calculates Methylene Blue Index."""
+    def calculate_mbv(volume_ml: float, conc_mg_per_ml: float, sample_g: float) -> float | None:
+        """Calculates Methylene Blue Value (MBV) in mg/g."""
         if sample_g == 0:
             return None
-        mb_g = volume_ml * (conc_g_per_l / 1000)
-        return round(mb_g / sample_g * 100, 2)
+        # MBV (mg/g) = (Volume of dye in mL * Concentration in mg/mL) / Mass of sample in g
+        mbv = (volume_ml * conc_mg_per_ml) / sample_g
+        return round(mbv, 2)
+
+    @staticmethod
+    def estimate_clay_content(mbv: float, mineral_type: str) -> float | None:
+        """Estimates clay content (%) based on MBV and mineral type."""
+        if mbv is None:
+            return None
+        
+        mineral_capacity = AppConfig.MINERAL_CAPACITY.get(mineral_type)
+        if not mineral_capacity or mineral_capacity == 0:
+            return None
+
+        # Clay % = (MBV of sample [mg/g] / Capacity of pure clay [mg/g]) * 100
+        clay_percentage = (mbv / mineral_capacity) * 100
+        return round(clay_percentage, 2)
     
     @staticmethod
     def calculate_final_clay_percent(a_mass: float, ca_percent: float, b_mass: float, cb_percent: float) -> float | None:
@@ -237,9 +261,11 @@ def build_sidebar() -> tuple[SampleData | None, bool]:
             dry_mass = st.number_input("Dry Mass (g)", value=100.0, step=0.1, min_value=0.0)
 
         with st.expander("Methylene Blue", expanded=True):
-            mb_vol = st.number_input("Volume (mL)", value=10.0, step=0.1, min_value=0.0)
-            mb_conc = st.number_input("Conc. (g/L)", value=1.95, step=0.01, min_value=0.0)
-            mb_sample_mass = st.number_input("Sample Mass (g)", value=10.0, step=0.1, min_value=0.0)
+            mb_vol = st.number_input("Volume (mL)", value=1.0, step=0.1, min_value=0.0, help="Volume of MB solution added.")
+            # A 1.95% solution is 1.95g/100mL, which is 19.5g/L or 19.5mg/mL.
+            mb_conc = st.number_input("Conc. (mg/mL)", value=19.5, step=0.01, min_value=0.0, help="Concentration of the MB solution in milligrams per milliliter.")
+            mb_sample_mass = st.number_input("Sample Mass (g)", value=5.0, step=0.1, min_value=0.0)
+            mb_mineral = st.selectbox("Assumed Clay Mineral", options=list(AppConfig.MINERAL_CAPACITY.keys()), index=2, help="Select the dominant clay mineral to estimate clay %.")
 
         with st.expander("Blend Ratio (Final Clay %)", expanded=True):
             blend_a_mass = st.number_input("A: Mass of current sand (g)", value=100.0, step=0.1, min_value=0.0)
@@ -256,7 +282,7 @@ def build_sidebar() -> tuple[SampleData | None, bool]:
         
         inputs = SampleData(
             sample_id, date, atb, atk, init_mass, r02, r04, wet_mass, dry_mass,
-            mb_vol, mb_conc, mb_sample_mass, blend_a_mass, blend_a_clay_pct,
+            mb_vol, mb_conc, mb_sample_mass, mb_mineral, blend_a_mass, blend_a_clay_pct,
             blend_b_mass, blend_b_clay_pct, color, odor, notes
         )
         return inputs, run_button_pressed
@@ -271,28 +297,10 @@ def build_main_view():
         2. **Equivalent Sand (ES)**: Mix sample with kaolin control in water, measure turbidity. `ES = 100 * (1 – ATB/ATK)`.
         3. **Granulation**: Sieve through 0.2 mm & 0.4 mm sieves, then weigh retained fractions.
         4. **Humidity**: Weigh a wet sample, dry at 105°C to constant mass, then weigh again. `Humidity % = (wet – dry)/dry * 100`.
-        5. **Methylene Blue**: Titrate with MB solution until a faint ring appears on filter paper.
+        5. **Methylene Blue**: Titrate with MB solution until a faint ring appears on filter paper. The MBV is calculated and used to estimate clay content based on the assumed mineralogy.
         6. **Blend Ratio**: Estimate final clay % after blending.
         """)
-
-    # --- Methylene Blue Value (MBV) Calculator ---
-    with st.expander("Methylene Blue Value (MBV) Calculator", expanded=False):
-        st.markdown("""
-        This tool calculates the Methylene Blue Value (MBV), a measure of the amount of clay-like material in a sample. 
-        Enter the mass of your sample and the total volume of Methylene Blue solution added to determine the MBV.
-        """)
-        # Using unique keys to avoid conflicts with sidebar inputs
-        mbv_sample_mass = st.number_input("Sample mass (g)", min_value=1.0, value=25.0, key="mbv_sample_mass")
-        mbv_volume = st.number_input("Total MB volume added (mL)", min_value=0.0, value=0.0, key="mbv_volume")
-        mbv_concentration = st.number_input("MB solution concentration (mg/mL)", min_value=0.0, value=19.5, key="mbv_concentration")
-
-        # Calculation and display
-        if mbv_sample_mass > 0:
-            mbv = (mbv_concentration * mbv_volume) / mbv_sample_mass
-            st.metric("Methylene Blue Value (MBV)", f"{mbv:.2f} mg/g")
-        else:
-            st.warning("Sample mass must be greater than zero.")
-
+    
     # --- Display History and Last Run ---
     if not st.session_state.history.empty:
         st.subheader("📒 Batch History")
@@ -328,7 +336,8 @@ def process_new_sample(inputs: SampleData):
     es = SandAnalysis.calculate_es(inputs.atb, inputs.atk)
     p02, p04, p_pass = SandAnalysis.calculate_granulation(inputs.init_mass, inputs.r02, inputs.r04)
     hum = SandAnalysis.calculate_humidity(inputs.wet_mass, inputs.dry_mass)
-    mb_i = SandAnalysis.calculate_mb_index(inputs.mb_vol, inputs.mb_conc, inputs.mb_sample_mass)
+    mbv = SandAnalysis.calculate_mbv(inputs.mb_vol, inputs.mb_conc_mg_per_ml, inputs.mb_sample_mass)
+    estimated_clay = SandAnalysis.estimate_clay_content(mbv, inputs.mb_mineral_type)
     final_clay = SandAnalysis.calculate_final_clay_percent(inputs.blend_a_mass, inputs.blend_a_clay_pct, inputs.blend_b_mass, inputs.blend_b_clay_pct)
 
     results = {
@@ -339,8 +348,10 @@ def process_new_sample(inputs: SampleData):
         "Granulation 0.2–0.4 mm (%)": p04,
         "Passing <0.4 mm (%)": p_pass,
         "Humidity (%)": hum,
-        "MB Index (g/100 g)": mb_i,
-        "Final Clay (%)": final_clay,
+        "MBV (mg/g)": mbv,
+        "Assumed Mineral": inputs.mb_mineral_type,
+        "Estimated Clay Content (%)": estimated_clay,
+        "Final Blended Clay (%)": final_clay,
         "Color": inputs.color,
         "Odor": inputs.odor,
         "Notes": inputs.notes,
@@ -350,7 +361,7 @@ def process_new_sample(inputs: SampleData):
     verdict, analysis_details = SandAnalysis.perform_technical_analysis(results)
 
     # Generate QR code and PDF
-    qr_str = f"ID:{inputs.sample_id}|Date:{results['Date']}|ES:{es}|MB:{mb_i}"
+    qr_str = f"ID:{inputs.sample_id}|Date:{results['Date']}|ES:{es}|MBV:{mbv}|ClayEst:{estimated_clay}"
     qr_img = generate_qr_code(qr_str)
     
     pdf_generator = PDFReport(AppConfig.FONT_PATH, AppConfig.FONT_PATH_BOLD)
@@ -374,6 +385,7 @@ def process_new_sample(inputs: SampleData):
 
 def main():
     """Main function to run the Streamlit app."""
+    st.set_page_config(layout="wide")
     AppConfig.check_font_paths()
     initialize_session_state()
     
