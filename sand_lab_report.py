@@ -175,14 +175,14 @@ class PDFReport:
         self.pdf.add_font("DejaVu", "", font_path, uni=True)
         self.pdf.add_font("DejaVu", "B", font_path_bold, uni=True)
 
-    def generate(self, sample_data: dict, qr_image_path: str, analysis_verdict: str, analysis_details: str) -> bytes:
+    def generate(self, sample_data: dict, qr_image_path: str, analysis_verdict: str, analysis_details: str) -> BytesIO:
         """Builds the complete PDF report."""
         self.pdf.add_page()
         self._add_header(sample_data, qr_image_path)
         self._add_technical_analysis(analysis_verdict, analysis_details)
         self._add_results_table(sample_data)
-        # The default output is bytes, which is correct. No .encode() needed.
-        return self.pdf.output()
+        # Return a BytesIO object, which is a universally compatible file-like object
+        return BytesIO(self.pdf.output())
 
     def _add_header(self, sample_data: dict, qr_image_path: str):
         """Adds the report header, title, and QR code."""
@@ -385,7 +385,7 @@ def process_new_sample(inputs: SampleData):
         st.session_state.last_run = {
             "results": results,
             "qr_image_buffer": qr_display_buffer, # Use the buffer for display
-            "pdf_bytes": pdf_bytes,
+            "pdf_bytes": pdf_bytes,               # Use the buffer for download
             "verdict": verdict,
             "analysis_details": analysis_details
         }
