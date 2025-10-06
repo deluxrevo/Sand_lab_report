@@ -1,14 +1,13 @@
 import streamlit as st
 import pandas as pd
 import qrcode
-from fpdf import FPDF
+from fpdf import FPDF  # fpdf2 is imported as fpdf, so this line is correct
 from io import BytesIO
 from PIL import Image
 import datetime
 import uuid
 import os
 from dataclasses import dataclass
-import tempfile
 
 # --- Configuration ---
 
@@ -175,22 +174,23 @@ class PDFReport:
         self.pdf.add_font("DejaVu", "", font_path, uni=True)
         self.pdf.add_font("DejaVu", "B", font_path_bold, uni=True)
 
-    def generate(self, sample_data: dict, qr_image_path: str, analysis_verdict: str, analysis_details: str) -> bytes:
+    def generate(self, sample_data: dict, qr_image_buffer: BytesIO, analysis_verdict: str, analysis_details: str) -> bytes:
         """Builds the complete PDF report."""
         self.pdf.add_page()
-        self._add_header(sample_data, qr_image_path)
+        self._add_header(sample_data, qr_image_buffer)
         self._add_technical_analysis(analysis_verdict, analysis_details)
         self._add_results_table(sample_data)
+        
         return self.pdf.output(dest="S").encode("latin-1")
 
-    def _add_header(self, sample_data: dict, qr_image_path: str):
+    def _add_header(self, sample_data: dict, qr_image_buffer: BytesIO):
         """Adds the report header, title, and QR code."""
         self.pdf.set_font("DejaVu", "B", size=16)
         self.pdf.cell(0, 10, "Clay & Sand Test Report", ln=True, align='C')
         self.pdf.ln(5)
 
-        # Use the file path for the QR code image, which is reliable
-        self.pdf.image(qr_image_path, x=160, y=15, w=30)
+        # The fpdf2 library correctly handles in-memory BytesIO objects
+        self.pdf.image(qr_image_buffer, x=160, y=15, w=30)
 
         self.pdf.set_font("DejaVu", size=10)
         self.pdf.cell(0, 8, f"Sample ID: {sample_data['Sample ID']}", ln=True)
@@ -304,9 +304,7 @@ def build_main_view():
         
         col1, col2 = st.columns([1, 3])
         with col1:
-            # --- CORRECTED SECTION ---
-            # Display QR code from the image data stored in session_state, not a file path.
-            st.image(last_run['qr_image'], width=150, caption="Sample QR Code")
+            st.image(last_run['qr_image_buffer'], width=150, caption="Sample QR Code")
             
             pdf_bytes = last_run['pdf_bytes']
             st.download_button(
@@ -320,6 +318,7 @@ def build_main_view():
         with col2:
             st.metric("Technical Verdict", last_run['verdict'])
             st.json(last_run['results'])
+
 
 def process_new_sample(inputs: SampleData):
     """Performs all calculations for a new sample and updates session state."""
@@ -352,42 +351,32 @@ def process_new_sample(inputs: SampleData):
     qr_str = f"ID:{inputs.sample_id}|Date:{results['Date']}|ES:{es}|MBV:{mbv}|ClayEst:{estimated_clay}"
     qr_img = generate_qr_code(qr_str)
     
-    # --- ROBUST PDF GENERATION USING A TEMPORARY FILE ---
-    tmp_path = None
-    pdf_bytes = None
+    # Save QR image to an in-memory buffer
+    qr_buffer = BytesIO()
+    qr_img.save(qr_buffer, format="PNG")
+    qr_buffer.seek(0) # Rewind buffer to the beginning
+
     try:
-        # Create a temporary file to save the QR code
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-            qr_img.save(tmpfile, format="PNG")
-            tmp_path = tmpfile.name
-        
-        # Generate the PDF using the path to the temporary file
         pdf_generator = PDFReport(AppConfig.FONT_PATH, AppConfig.FONT_PATH_BOLD)
-        pdf_bytes = pdf_generator.generate(results, tmp_path, verdict, analysis_details)
-
+        pdf_bytes = pdf_generator.generate(results, qr_buffer, verdict, analysis_details)
     except Exception as e:
-        st.error(f"💥 Failed to generate PDF report: {e}")
-        return # Stop processing if PDF fails
-    finally:
-        # Clean up the temporary file
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        st.error(f"💥 Failed to generate PDF report. Is `fpdf2` in requirements.txt? Error: {e}")
+        return
 
-    # --- CORRECTED SECTION ---
-    # Update history and session state only if PDF generation was successful
+    # Update history and session state
     new_record_df = pd.DataFrame([results])
     st.session_state.history = pd.concat([st.session_state.history, new_record_df], ignore_index=True)
     
-    # Store the actual image object, not the deleted path
     st.session_state.last_run = {
         "results": results,
-        "qr_image": qr_img, 
+        "qr_image_buffer": qr_buffer, # Store the buffer for display
         "pdf_bytes": pdf_bytes,
         "verdict": verdict,
         "analysis_details": analysis_details
     }
     st.success(f"✅ Analysis for sample '{inputs.sample_id}' completed and saved.")
     st.rerun()
+
 
 def main():
     """Main function to run the Streamlit app."""
