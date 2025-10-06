@@ -195,10 +195,11 @@ class PDFReport:
         self.pdf.cell(0, 10, "Clay & Sand Test Report", ln=True, align='C')
         self.pdf.ln(5)
 
-        # Embed QR code from memory
+        # CORRECTED SECTION: Embed QR code from memory
         with BytesIO() as qr_buffer:
             qr_img.save(qr_buffer, format="PNG")
-            self.pdf.image(qr_buffer, x=160, y=15, w=30)
+            qr_buffer.seek(0)  # Rewind the buffer to the beginning
+            self.pdf.image(qr_buffer, x=160, y=15, w=30, type="PNG") # Explicitly set type
 
         self.pdf.set_font("DejaVu", size=10)
         self.pdf.cell(0, 8, f"Sample ID: {sample_data['Sample ID']}", ln=True)
