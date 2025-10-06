@@ -63,32 +63,26 @@ class SampleData:
 class AnalysisResult:
     """Holds all calculated results and verdict information."""
     results_dict: Dict[str, Any]
-    verdict: str # RED, AMBER, GREEN
+    verdict: str
     reason_codes: List[str]
 
 # --- Calculation & Analysis Logic ---
 
 class SandAnalysis:
     """Contains all calculation and analysis functions for sand testing."""
-
     @staticmethod
     def perform_full_analysis(inputs: SampleData, config: AppConfig) -> AnalysisResult:
         results = {}
         reason_codes = []
 
-        if inputs.init_mass <= 0:
-            reason_codes.append("INTEGRITY_FAIL: Initial Mass must be > 0.")
-        if inputs.r02_mass + inputs.r04_mass > inputs.init_mass:
-            reason_codes.append("INTEGRITY_FAIL: Retained mass cannot exceed Initial Mass.")
-        if not (0 <= inputs.fines_pct <= 100):
-            reason_codes.append("INTEGRITY_FAIL: Fines must be between 0 and 100%.")
+        if inputs.init_mass <= 0: reason_codes.append("INTEGRITY_FAIL: Initial Mass must be > 0.")
+        if inputs.r02_mass + inputs.r04_mass > inputs.init_mass: reason_codes.append("INTEGRITY_FAIL: Retained mass cannot exceed Initial Mass.")
+        if not (0 <= inputs.fines_pct <= 100): reason_codes.append("INTEGRITY_FAIL: Fines must be between 0 and 100%.")
         
-        if reason_codes:
-            return AnalysisResult(results, "RED", reason_codes)
+        if reason_codes: return AnalysisResult(results, "RED", reason_codes)
 
         p04_mass_retained_as_pct = round(100 * inputs.r04_mass / inputs.init_mass, 2)
         passing_04_pct = round(100 - p04_mass_retained_as_pct, 2)
-
         results["Passing <0.4 mm (%)"] = passing_04_pct
         results["Fines (<0.063 mm) (%)"] = inputs.fines_pct
         
@@ -98,11 +92,8 @@ class SandAnalysis:
         mbv = SandAnalysis._calculate_mbv(inputs.mb_vol, inputs.mb_conc_mg_per_ml, inputs.mb_sample_mass)
         results["MBV (mg/g)"] = mbv
 
-        clay_range = {}
-        for mineral, capacity in config.MINERAL_CAPACITY.items():
-            clay_range[mineral] = SandAnalysis._estimate_whole_sand_clay(mbv, capacity, inputs.fines_pct)
-        
-        results["Clay Content Range (%)"] = {k: v for k, v in clay_range.items()}
+        clay_range = {mineral: SandAnalysis._estimate_whole_sand_clay(mbv, capacity, inputs.fines_pct) for mineral, capacity in config.MINERAL_CAPACITY.items()}
+        results["Clay Content Range (%)"] = clay_range
         worst_case_clay = clay_range.get("Kaolinite")
         results["Whole-Sand Clay Content (%)"] = worst_case_clay
 
@@ -190,10 +181,10 @@ class PDFReport:
 
 def initialize_session_state():
     if "history" not in st.session_state: st.session_state.history = pd.DataFrame()
-    if "last_run" not in st.session_state: st.session_state.last_run = {}
+    # The 'last_run' key is no longer needed for display logic
+    if "last_run_inputs" not in st.session_state: st.session_state.last_run_inputs = None
 
 def build_sidebar(config: AppConfig) -> tuple[SampleData | None, bool]:
-    """Creates the sidebar UI for inputs."""
     with st.sidebar:
         st.header("📋 Batch & Sample Info")
         profile = st.selectbox("Select Product Profile", options=list(config.PRODUCT_PROFILES.keys()))
@@ -222,58 +213,78 @@ def build_sidebar(config: AppConfig) -> tuple[SampleData | None, bool]:
         inputs = SampleData(profile, sample_id, date, init_mass, r02_mass, r04_mass, fines_pct, atb, atk, mb_vol, mb_conc, mb_sample_mass, notes)
         return inputs, run_button
 
-def build_main_view():
-    """Builds the main panel UI for results and history."""
-    st.title("Sand Quality Control Dashboard") # Removed Chinese text
+def build_main_view(config: AppConfig):
+    st.title("Sand Quality Control Dashboard")
 
-    if st.session_state.last_run:
-        last_run = st.session_state.last_run
-        analysis: AnalysisResult = last_run["analysis_result"]
+    if not st.session_state.history.empty:
+        # Display the last run from the history, which is robust
+        last_run_data = st.session_state.history.iloc[-1].to_dict()
         
-        st.subheader(f"📄 Last Sample: {last_run['sample_info']['sample_id']}")
+        st.subheader(f"📄 Last Sample: {last_run_data.get('sample_id', 'N/A')}")
 
+        # Re-create analysis object for display
+        verdict = last_run_data.get('Verdict', 'N/A')
+        
         col1, col2 = st.columns([3, 1])
         with col1:
-            color = analysis.verdict.lower()
+            color = verdict.lower()
             st.markdown(f"""
             <div style="background-color: {color}; padding: 10px; border-radius: 5px; color: white;">
-                <h2 style="text-align: center;">Verdict: {analysis.verdict}</h2>
+                <h2 style="text-align: center;">Verdict: {verdict}</h2>
             </div>
             """, unsafe_allow_html=True)
         with col2:
-            st.image(last_run['qr_image_buffer'], caption="Sample QR Code")
+            # Generate QR code on-the-fly for display
+            qr_str = f"ID:{last_run_data.get('sample_id')}|Date:{last_run_data.get('Date')}|Verdict:{verdict}"
+            qr_img = generate_qr_code(qr_str)
+            st.image(qr_img, caption="Sample QR Code")
 
-        with st.expander("Verdict Details & Recommendations", expanded=True):
-            if analysis.verdict == "GREEN":
-                st.success("✅ Sample meets all specifications for the selected profile.")
-            elif analysis.verdict == "AMBER":
-                st.warning("⚠️ Sample is out of spec but data is valid. Blend may be required.")
-                st.markdown("**Reason Codes:**")
-                for code in analysis.reason_codes:
-                    st.markdown(f"- `{code}`")
-                st.info("💡 **Suggestion:** A blend with sand from other silos may be necessary. *[Blend engine logic to be implemented here]*")
-            elif analysis.verdict == "RED":
-                st.error("⛔️ Data integrity error. Please check your inputs.")
-                st.markdown("**Reason Codes:**")
-                for code in analysis.reason_codes:
-                    st.markdown(f"- `{code}`")
-        
-        st.json(analysis.results_dict)
-        
-        st.download_button(
-            "⬇️ Download PDF Report",
-            data=last_run['pdf_bytes'],
-            file_name=f"Report_{last_run['sample_info']['sample_id']}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+        # Re-generate PDF for download on demand
+        if st.button("📦 Prepare PDF for Download"):
+            with st.spinner("Generating PDF..."):
+                # Re-run analysis to get the full result object for the PDF
+                inputs = st.session_state.last_run_inputs
+                if inputs:
+                    analysis_result = SandAnalysis.perform_full_analysis(inputs, config)
+                    sample_info = {"sample_id": inputs.sample_id, "date": inputs.date, "product_profile": inputs.product_profile}
+                    
+                    qr_str_pdf = f"ID:{inputs.sample_id}|Date:{inputs.date.isoformat()}|Profile:{inputs.product_profile}|Verdict:{analysis_result.verdict}"
+                    qr_img_pdf = generate_qr_code(qr_str_pdf)
+                    
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                            qr_img_pdf.save(tmpfile, format="PNG")
+                            tmp_path = tmpfile.name
+                        
+                        pdf_generator = PDFReport(config.FONT_PATH, config.FONT_PATH_BOLD)
+                        pdf_bytes = pdf_generator.generate(sample_info, analysis_result, tmp_path)
+                        
+                        st.session_state.pdf_to_download = {
+                            "data": pdf_bytes,
+                            "name": f"Report_{inputs.sample_id}.pdf"
+                        }
+                    finally:
+                        if 'tmp_path' in locals() and os.path.exists(tmp_path): os.remove(tmp_path)
+                else:
+                    st.error("Could not regenerate PDF. Please run a new analysis.")
 
-    if not st.session_state.history.empty:
-        st.subheader("📒 Batch History")
-        st.dataframe(st.session_state.history)
+        if 'pdf_to_download' in st.session_state and st.session_state.pdf_to_download:
+            st.download_button(
+                "⬇️ Download PDF Report",
+                data=st.session_state.pdf_to_download["data"],
+                file_name=st.session_state.pdf_to_download["name"],
+                mime="application/pdf",
+                use_container_width=True
+            )
+            # Clear it after showing the button
+            st.session_state.pdf_to_download = None
+
+        st.json(last_run_data)
+
+    st.subheader("📒 Full Batch History")
+    st.dataframe(st.session_state.history)
 
 def main():
-    """Main function to run the Streamlit app."""
     st.set_page_config(layout="wide")
     config = AppConfig()
     config.check_font_paths()
@@ -283,50 +294,29 @@ def main():
     
     if run_pressed and inputs:
         analysis_result = SandAnalysis.perform_full_analysis(inputs, config)
+        st.session_state.last_run_inputs = inputs # Save inputs to regenerate PDF
         
-        sample_info = {
-            "sample_id": inputs.sample_id,
-            "date": inputs.date,
-            "product_profile": inputs.product_profile,
+        sample_info = {"sample_id": inputs.sample_id, "date": inputs.date, "product_profile": inputs.product_profile}
+        
+        # Flatten results for history table
+        history_record = {
+            "Date": inputs.date.isoformat(),
+            "Sample ID": inputs.sample_id,
+            "Product Profile": inputs.product_profile,
+            "Verdict": analysis_result.verdict,
+            **analysis_result.results_dict
         }
         
-        # --- Dual QR Code Pipeline ---
-        qr_str = f"ID:{inputs.sample_id}|Date:{inputs.date.isoformat()}|Profile:{inputs.product_profile}|Verdict:{analysis_result.verdict}"
-        qr_img = generate_qr_code(qr_str)
-        
-        qr_display_buffer = BytesIO()
-        qr_img.save(qr_display_buffer, format="PNG")
-        qr_display_buffer.seek(0)
-        
-        pdf_bytes = None
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-                qr_img.save(tmpfile, format="PNG")
-                tmp_path = tmpfile.name
-            
-            pdf_generator = PDFReport(config.FONT_PATH, config.FONT_PATH_BOLD)
-            pdf_bytes = pdf_generator.generate(sample_info, analysis_result, tmp_path)
-        finally:
-            if 'tmp_path' in locals() and os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        
-        st.session_state.last_run = {
-            "sample_info": sample_info,
-            "analysis_result": analysis_result,
-            "pdf_bytes": pdf_bytes,
-            "qr_image_buffer": qr_display_buffer,
-        }
-
-        history_record = {**sample_info, "Verdict": analysis_result.verdict, **analysis_result.results_dict}
-        if 'Clay Content Range (%)' in history_record:
+        # Clean up the clay range dict for better table display
+        if 'Clay Content Range (%)' in history_record and isinstance(history_record['Clay Content Range (%)'], dict):
             clay_range = history_record.pop('Clay Content Range (%)')
-            history_record.update({f"Clay ({k})": v for k, v in clay_range.items()})
+            history_record['Clay Range (S/I/K)'] = f"{clay_range.get('Smectite')}% / {clay_range.get('Illite')}% / {clay_range.get('Kaolinite')}%"
 
         st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([history_record])], ignore_index=True)
-        
+        st.session_state.pdf_to_download = None # Clear any old PDF
         st.rerun()
 
-    build_main_view()
+    build_main_view(config)
 
 if __name__ == "__main__":
     main()
