@@ -25,15 +25,15 @@ class AppConfig:
         "Granulation 0.2–0.4 mm (%)": (10, 70),
         "Passing <0.4 mm (%)": (60, 100),
         "Humidity (%)": (0, 5),
-        "Estimated Clay Content (%)": (0, 2.5), # Adjusted norm for clay content
+        "Whole-Sand Clay Content (%)": (0, 2.5), # Corrected the name of the metric to be checked
         "ES (%)": (75, 100),
     }
     
-    # Cation Exchange Capacity (CEC) for different clay minerals in mg of MB per g of clay.
+    # Cation Exchange Capacity (CEC) values, with Kaolinite updated to the more standard 25.
     MINERAL_CAPACITY = {
         "Smectite": 100,  # High capacity (e.g., Montmorillonite)
         "Illite": 40,      # Medium capacity
-        "Kaolinite": 15,   # Low capacity
+        "Kaolinite": 25,   # Low capacity (updated from 15)
     }
 
     @staticmethod
@@ -90,7 +90,8 @@ class SandAnalysis:
             return None, None, None
         p02 = round(100 * r02 / init_mass, 2)
         p04 = round(100 * r04 / init_mass, 2)
-        pass04 = round(100 * (init_mass - r04) / init_mass, 2)
+        # Correctly calculate fines as what's left after sieving
+        pass04 = round(100 * (init_mass - r02 - r04) / init_mass, 2)
         return p02, p04, pass04
 
     @staticmethod
@@ -109,16 +110,25 @@ class SandAnalysis:
         return round(mbv, 2)
 
     @staticmethod
-    def estimate_clay_content(mbv: float, mineral_type: str) -> float | None:
-        """Estimates clay content (%) based on MBV and mineral type."""
-        if mbv is None:
+    def estimate_whole_sand_clay_content(mbv: float, mineral_type: str, fines_percent: float) -> float | None:
+        """
+        Correctly estimates the clay content as a percentage of the WHOLE SAND sample.
+        This is the critical logical fix.
+        """
+        if mbv is None or fines_percent is None:
             return None
         
         mineral_capacity = AppConfig.MINERAL_CAPACITY.get(mineral_type)
         if not mineral_capacity or mineral_capacity == 0:
             return None
-        clay_percentage = (mbv / mineral_capacity) * 100
-        return round(clay_percentage, 2)
+
+        # Step 1: Calculate the percentage of clay ONLY within the fines fraction.
+        clay_in_fines_percent = (mbv / mineral_capacity) * 100
+        
+        # Step 2: Scale that value by the percentage of fines in the whole sample.
+        whole_sand_clay_percent = clay_in_fines_percent * (fines_percent / 100.0)
+        
+        return round(whole_sand_clay_percent, 2)
     
     @staticmethod
     def calculate_final_clay_percent(a_mass: float, ca_percent: float, b_mass: float, cb_percent: float) -> float | None:
@@ -190,7 +200,6 @@ class PDFReport:
         self.pdf.cell(0, 10, "Clay & Sand Test Report", ln=True, align='C')
         self.pdf.ln(5)
 
-        # Using a file path is the only truly reliable method for fpdf/fpdf2
         self.pdf.image(qr_image_path, x=160, y=15, w=30)
 
         self.pdf.set_font("DejaVu", size=10)
@@ -305,7 +314,6 @@ def build_main_view():
         
         col1, col2 = st.columns([1, 3])
         with col1:
-            # Display the QR code from the in-memory buffer
             st.image(last_run['qr_image_buffer'], width=150, caption="Sample QR Code")
             
             pdf_bytes = last_run['pdf_bytes']
@@ -324,11 +332,16 @@ def build_main_view():
 
 def process_new_sample(inputs: SampleData):
     """Performs all calculations for a new sample and updates session state."""
-    es = SandAnalysis.calculate_es(inputs.atb, inputs.atk)
+    # Granulation results are needed for the clay calculation
     p02, p04, p_pass = SandAnalysis.calculate_granulation(inputs.init_mass, inputs.r02, inputs.r04)
+    
+    es = SandAnalysis.calculate_es(inputs.atb, inputs.atk)
     hum = SandAnalysis.calculate_humidity(inputs.wet_mass, inputs.dry_mass)
     mbv = SandAnalysis.calculate_mbv(inputs.mb_vol, inputs.mb_conc_mg_per_ml, inputs.mb_sample_mass)
-    estimated_clay = SandAnalysis.estimate_clay_content(mbv, inputs.mb_mineral_type)
+    
+    # Use the new, correct clay estimation method
+    whole_sand_clay = SandAnalysis.estimate_whole_sand_clay_content(mbv, inputs.mb_mineral_type, p_pass)
+    
     final_clay = SandAnalysis.calculate_final_clay_percent(inputs.blend_a_mass, inputs.blend_a_clay_pct, inputs.blend_b_mass, inputs.blend_b_clay_pct)
 
     results = {
@@ -341,7 +354,7 @@ def process_new_sample(inputs: SampleData):
         "Humidity (%)": hum,
         "MBV (mg/g)": mbv,
         "Assumed Mineral": inputs.mb_mineral_type,
-        "Estimated Clay Content (%)": estimated_clay,
+        "Whole-Sand Clay Content (%)": whole_sand_clay, # Updated key
         "Final Blended Clay (%)": final_clay,
         "Color": inputs.color,
         "Odor": inputs.odor,
@@ -350,17 +363,14 @@ def process_new_sample(inputs: SampleData):
     
     verdict, analysis_details = SandAnalysis.perform_technical_analysis(results)
 
-    qr_str = f"ID:{inputs.sample_id}|Date:{results['Date']}|ES:{es}|MBV:{mbv}|ClayEst:{estimated_clay}"
+    qr_str = f"ID:{inputs.sample_id}|Date:{results['Date']}|ES:{es}|MBV:{mbv}|ClayEst:{whole_sand_clay}"
     qr_img = generate_qr_code(qr_str)
     
-    # --- FINAL ROBUST SOLUTION ---
-    
-    # 1. Prepare an in-memory buffer for Streamlit display
+    # --- Using the robust dual-pipeline for images ---
     qr_display_buffer = BytesIO()
     qr_img.save(qr_display_buffer, format="PNG")
     qr_display_buffer.seek(0)
 
-    # 2. Use a temporary file path for reliable PDF generation
     tmp_path = None
     pdf_bytes = None
     try:
@@ -384,8 +394,8 @@ def process_new_sample(inputs: SampleData):
         
         st.session_state.last_run = {
             "results": results,
-            "qr_image_buffer": qr_display_buffer, # Use the buffer for display
-            "pdf_bytes": pdf_bytes,               # Use the buffer for download
+            "qr_image_buffer": qr_display_buffer,
+            "pdf_bytes": pdf_bytes,
             "verdict": verdict,
             "analysis_details": analysis_details
         }
