@@ -181,7 +181,6 @@ class PDFReport:
 
 def initialize_session_state():
     if "history" not in st.session_state: st.session_state.history = pd.DataFrame()
-    # The 'last_run' key is no longer needed for display logic
     if "last_run_inputs" not in st.session_state: st.session_state.last_run_inputs = None
 
 def build_sidebar(config: AppConfig) -> tuple[SampleData | None, bool]:
@@ -217,12 +216,10 @@ def build_main_view(config: AppConfig):
     st.title("Sand Quality Control Dashboard")
 
     if not st.session_state.history.empty:
-        # Display the last run from the history, which is robust
         last_run_data = st.session_state.history.iloc[-1].to_dict()
         
-        st.subheader(f"📄 Last Sample: {last_run_data.get('sample_id', 'N/A')}")
+        st.subheader(f"📄 Last Sample: {last_run_data.get('Sample ID', 'N/A')}")
 
-        # Re-create analysis object for display
         verdict = last_run_data.get('Verdict', 'N/A')
         
         col1, col2 = st.columns([3, 1])
@@ -234,15 +231,16 @@ def build_main_view(config: AppConfig):
             </div>
             """, unsafe_allow_html=True)
         with col2:
-            # Generate QR code on-the-fly for display
-            qr_str = f"ID:{last_run_data.get('sample_id')}|Date:{last_run_data.get('Date')}|Verdict:{verdict}"
+            # --- THE FIX ---
+            # Generate QR code and convert to a byte buffer before passing to st.image
+            qr_str = f"ID:{last_run_data.get('Sample ID')}|Date:{last_run_data.get('Date')}|Verdict:{verdict}"
             qr_img = generate_qr_code(qr_str)
-            st.image(qr_img, caption="Sample QR Code")
+            qr_buffer = BytesIO()
+            qr_img.save(qr_buffer, format="PNG")
+            st.image(qr_buffer, caption="Sample QR Code")
 
-        # Re-generate PDF for download on demand
         if st.button("📦 Prepare PDF for Download"):
             with st.spinner("Generating PDF..."):
-                # Re-run analysis to get the full result object for the PDF
                 inputs = st.session_state.last_run_inputs
                 if inputs:
                     analysis_result = SandAnalysis.perform_full_analysis(inputs, config)
@@ -259,10 +257,7 @@ def build_main_view(config: AppConfig):
                         pdf_generator = PDFReport(config.FONT_PATH, config.FONT_PATH_BOLD)
                         pdf_bytes = pdf_generator.generate(sample_info, analysis_result, tmp_path)
                         
-                        st.session_state.pdf_to_download = {
-                            "data": pdf_bytes,
-                            "name": f"Report_{inputs.sample_id}.pdf"
-                        }
+                        st.session_state.pdf_to_download = {"data": pdf_bytes, "name": f"Report_{inputs.sample_id}.pdf"}
                     finally:
                         if 'tmp_path' in locals() and os.path.exists(tmp_path): os.remove(tmp_path)
                 else:
@@ -276,7 +271,6 @@ def build_main_view(config: AppConfig):
                 mime="application/pdf",
                 use_container_width=True
             )
-            # Clear it after showing the button
             st.session_state.pdf_to_download = None
 
         st.json(last_run_data)
@@ -294,11 +288,10 @@ def main():
     
     if run_pressed and inputs:
         analysis_result = SandAnalysis.perform_full_analysis(inputs, config)
-        st.session_state.last_run_inputs = inputs # Save inputs to regenerate PDF
+        st.session_state.last_run_inputs = inputs
         
         sample_info = {"sample_id": inputs.sample_id, "date": inputs.date, "product_profile": inputs.product_profile}
         
-        # Flatten results for history table
         history_record = {
             "Date": inputs.date.isoformat(),
             "Sample ID": inputs.sample_id,
@@ -307,13 +300,12 @@ def main():
             **analysis_result.results_dict
         }
         
-        # Clean up the clay range dict for better table display
         if 'Clay Content Range (%)' in history_record and isinstance(history_record['Clay Content Range (%)'], dict):
             clay_range = history_record.pop('Clay Content Range (%)')
             history_record['Clay Range (S/I/K)'] = f"{clay_range.get('Smectite')}% / {clay_range.get('Illite')}% / {clay_range.get('Kaolinite')}%"
 
-        st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([history_record])], ignore_index=True)
-        st.session_state.pdf_to_download = None # Clear any old PDF
+        st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([history_record])], ignore_index=True).tail(100) # Keep last 100 entries
+        st.session_state.pdf_to_download = None
         st.rerun()
 
     build_main_view(config)
