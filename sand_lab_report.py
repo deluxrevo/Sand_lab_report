@@ -304,8 +304,9 @@ def build_main_view():
         
         col1, col2 = st.columns([1, 3])
         with col1:
-            # Display QR code from the saved temporary file path
-            st.image(last_run['qr_image_path'], width=150, caption="Sample QR Code")
+            # --- CORRECTED SECTION ---
+            # Display QR code from the image data stored in session_state, not a file path.
+            st.image(last_run['qr_image'], width=150, caption="Sample QR Code")
             
             pdf_bytes = last_run['pdf_bytes']
             st.download_button(
@@ -372,13 +373,15 @@ def process_new_sample(inputs: SampleData):
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
+    # --- CORRECTED SECTION ---
     # Update history and session state only if PDF generation was successful
     new_record_df = pd.DataFrame([results])
     st.session_state.history = pd.concat([st.session_state.history, new_record_df], ignore_index=True)
     
+    # Store the actual image object, not the deleted path
     st.session_state.last_run = {
         "results": results,
-        "qr_image_path": tmp_path, # Store path for potential display, though it's deleted
+        "qr_image": qr_img, 
         "pdf_bytes": pdf_bytes,
         "verdict": verdict,
         "analysis_details": analysis_details
