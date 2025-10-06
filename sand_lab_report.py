@@ -181,7 +181,8 @@ class PDFReport:
         self._add_header(sample_data, qr_image_path)
         self._add_technical_analysis(analysis_verdict, analysis_details)
         self._add_results_table(sample_data)
-        return self.pdf.output(dest="S").encode("latin-1")
+        # The default output is bytes, which is correct. No .encode() needed.
+        return self.pdf.output()
 
     def _add_header(self, sample_data: dict, qr_image_path: str):
         """Adds the report header, title, and QR code."""
