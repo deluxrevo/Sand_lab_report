@@ -28,16 +28,19 @@ class AppConfig:
             "Passing <0.4 mm (%)": (70, 100),
             "Fines (<0.063 mm) (%)": (8, 15),
             "Whole-Sand Clay Content (%)": (0, 2.0),
+            "ES (%)": (75, 100),
         },
         "Tile adhesive": {
             "Passing <0.4 mm (%)": (60, 95),
             "Fines (<0.063 mm) (%)": (10, 18),
             "Whole-Sand Clay Content (%)": (0, 2.5),
+            "ES (%)": (75, 100),
         },
         "Projected/render mortar": {
             "Passing <0.4 mm (%)": (40, 80),
             "Fines (<0.063 mm) (%)": (6, 14),
             "Whole-Sand Clay Content (%)": (0, 3.0),
+            "ES (%)": (75, 100),
         },
     })
 
@@ -52,6 +55,7 @@ class SampleData:
     """Holds all input data from the UI for a single sample."""
     product_profile: str; sample_id: str; date: datetime.date
     init_mass: float; r02_mass: float; r04_mass: float; fines_pct: float
+    atb: float; atk: float;
     mb_vol: float; mb_conc_mg_per_ml: float; mb_sample_mass: float
     notes: str
 
@@ -82,18 +86,15 @@ class SandAnalysis:
         if reason_codes:
             return AnalysisResult(results, "RED", reason_codes)
 
-        p02_mass_retained_as_pct = round(100 * inputs.r02_mass / inputs.init_mass, 2)
         p04_mass_retained_as_pct = round(100 * inputs.r04_mass / inputs.init_mass, 2)
-        
-        # This is the material that passed the 0.4mm sieve but was retained on the 0.2mm sieve.
-        # This seems to be a misunderstanding in my previous code.
-        # Let's assume r02_mass is for 0.2-0.4mm and r04_mass is >0.4mm
-        # Then Passing < 0.4mm is 100 - (r04_mass_%)
         passing_04_pct = round(100 - p04_mass_retained_as_pct, 2)
 
         results["Passing <0.4 mm (%)"] = passing_04_pct
         results["Fines (<0.063 mm) (%)"] = inputs.fines_pct
         
+        es_pct = SandAnalysis._calculate_es(inputs.atb, inputs.atk)
+        results["ES (%)"] = es_pct
+
         mbv = SandAnalysis._calculate_mbv(inputs.mb_vol, inputs.mb_conc_mg_per_ml, inputs.mb_sample_mass)
         results["MBV (mg/g)"] = mbv
 
@@ -115,6 +116,11 @@ class SandAnalysis:
         return AnalysisResult(results, verdict, reason_codes)
 
     @staticmethod
+    def _calculate_es(atb: float, atk: float) -> float | None:
+        if atk <= 0: return None
+        return round(100 * (1 - atb / atk), 2)
+    
+    @staticmethod
     def _calculate_mbv(volume_ml: float, conc_mg_per_ml: float, sample_g: float) -> float | None:
         if sample_g <= 0: return None
         return round((volume_ml * conc_mg_per_ml) / sample_g, 2)
@@ -126,7 +132,13 @@ class SandAnalysis:
         whole_sand_clay = clay_in_fines * (fines_percent / 100.0)
         return round(whole_sand_clay, 2)
 
-# --- PDF Generation & UI ---
+# --- Utility & PDF ---
+
+def generate_qr_code(data_str: str) -> Image.Image:
+    qr = qrcode.QRCode(box_size=4, border=1)
+    qr.add_data(data_str)
+    qr.make(fit=True)
+    return qr.make_image(fill_color="black", back_color="white")
 
 class PDFReport:
     """Handles the creation of the PDF report."""
@@ -135,16 +147,17 @@ class PDFReport:
         self.pdf.add_font("DejaVu", "", font_path, uni=True)
         self.pdf.add_font("DejaVu", "B", font_path_bold, uni=True)
 
-    def generate(self, sample_info: dict, analysis_result: AnalysisResult) -> BytesIO:
+    def generate(self, sample_info: dict, analysis_result: AnalysisResult, qr_image_path: str) -> BytesIO:
         self.pdf.add_page()
-        self._add_header(sample_info)
+        self._add_header(sample_info, qr_image_path)
         self._add_verdict_section(analysis_result)
         self._add_results_table(analysis_result.results_dict)
         return BytesIO(self.pdf.output())
 
-    def _add_header(self, sample_info: dict):
+    def _add_header(self, sample_info: dict, qr_image_path: str):
         self.pdf.set_font("DejaVu", "B", 16)
         self.pdf.cell(0, 10, "Sand Quality Control Report", ln=True, align='C')
+        self.pdf.image(qr_image_path, x=self.pdf.w - 40, y=10, w=30)
         self.pdf.set_font("DejaVu", "", 10)
         self.pdf.cell(0, 8, f"Sample ID: {sample_info.get('sample_id')}", ln=True)
         self.pdf.cell(0, 8, f"Date: {sample_info.get('date').isoformat()}", ln=True)
@@ -173,6 +186,8 @@ class PDFReport:
                 val_str = str(val if val is not None else "N/A")
             self.pdf.cell(self.pdf.w * 0.3, 8, val_str, border=1, ln=True)
 
+# --- Streamlit UI ---
+
 def initialize_session_state():
     if "history" not in st.session_state: st.session_state.history = pd.DataFrame()
     if "last_run" not in st.session_state: st.session_state.last_run = {}
@@ -187,11 +202,14 @@ def build_sidebar(config: AppConfig) -> tuple[SampleData | None, bool]:
         
         st.header("🔬 Test Inputs")
         with st.expander("Particle Size Distribution (PSD)", expanded=True):
-            # --- CORRECTED SECTION USING KEYWORD ARGUMENTS ---
             init_mass = st.number_input("Initial Mass (g)", min_value=0.1, value=100.0, step=0.1)
             r02_mass = st.number_input("Retained 0.2–0.4 mm (g)", min_value=0.0, value=30.0, step=0.1)
             r04_mass = st.number_input("Retained >0.4 mm (g)", min_value=0.0, value=20.0, step=0.1)
             fines_pct = st.number_input("Fines (<0.063 mm) (%)", min_value=0.0, max_value=100.0, value=12.0, step=0.1)
+
+        with st.expander("Equivalent Sand (ES)", expanded=True):
+            atb = st.number_input("ATB (NTU)", min_value=0.0, value=50.0, step=0.1)
+            atk = st.number_input("ATK (NTU)", min_value=0.1, value=200.0, step=0.1)
 
         with st.expander("Methylene Blue (MBV)", expanded=True):
             mb_vol = st.number_input("MBV Volume (mL)", min_value=0.0, value=1.0, step=0.1)
@@ -201,12 +219,12 @@ def build_sidebar(config: AppConfig) -> tuple[SampleData | None, bool]:
         notes = st.text_area("Notes / Observations", "Standard sample.")
         run_button = st.button("🧪 Run Analysis", use_container_width=True)
 
-        inputs = SampleData(profile, sample_id, date, init_mass, r02_mass, r04_mass, fines_pct, mb_vol, mb_conc, mb_sample_mass, notes)
+        inputs = SampleData(profile, sample_id, date, init_mass, r02_mass, r04_mass, fines_pct, atb, atk, mb_vol, mb_conc, mb_sample_mass, notes)
         return inputs, run_button
 
 def build_main_view():
     """Builds the main panel UI for results and history."""
-    st.title("砂石质量控制面板 (Sand Quality Control Dashboard)")
+    st.title("Sand Quality Control Dashboard") # Removed Chinese text
 
     if st.session_state.last_run:
         last_run = st.session_state.last_run
@@ -214,13 +232,17 @@ def build_main_view():
         
         st.subheader(f"📄 Last Sample: {last_run['sample_info']['sample_id']}")
 
-        color = analysis.verdict.lower()
-        st.markdown(f"""
-        <div style="background-color: {color}; padding: 10px; border-radius: 5px; color: white; text-align: center;">
-            <h2>Verdict: {analysis.verdict}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            color = analysis.verdict.lower()
+            st.markdown(f"""
+            <div style="background-color: {color}; padding: 10px; border-radius: 5px; color: white;">
+                <h2 style="text-align: center;">Verdict: {analysis.verdict}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+        with col2:
+            st.image(last_run['qr_image_buffer'], caption="Sample QR Code")
+
         with st.expander("Verdict Details & Recommendations", expanded=True):
             if analysis.verdict == "GREEN":
                 st.success("✅ Sample meets all specifications for the selected profile.")
@@ -268,18 +290,35 @@ def main():
             "product_profile": inputs.product_profile,
         }
         
-        pdf_generator = PDFReport(config.FONT_PATH, config.FONT_PATH_BOLD)
-        pdf_bytes = pdf_generator.generate(sample_info, analysis_result)
+        # --- Dual QR Code Pipeline ---
+        qr_str = f"ID:{inputs.sample_id}|Date:{inputs.date.isoformat()}|Profile:{inputs.product_profile}|Verdict:{analysis_result.verdict}"
+        qr_img = generate_qr_code(qr_str)
+        
+        qr_display_buffer = BytesIO()
+        qr_img.save(qr_display_buffer, format="PNG")
+        qr_display_buffer.seek(0)
+        
+        pdf_bytes = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                qr_img.save(tmpfile, format="PNG")
+                tmp_path = tmpfile.name
+            
+            pdf_generator = PDFReport(config.FONT_PATH, config.FONT_PATH_BOLD)
+            pdf_bytes = pdf_generator.generate(sample_info, analysis_result, tmp_path)
+        finally:
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.remove(tmp_path)
         
         st.session_state.last_run = {
             "sample_info": sample_info,
             "analysis_result": analysis_result,
             "pdf_bytes": pdf_bytes,
+            "qr_image_buffer": qr_display_buffer,
         }
 
         history_record = {**sample_info, "Verdict": analysis_result.verdict, **analysis_result.results_dict}
-        # Flatten the clay range dict for better table display
-        if 'Clay Content Range (%)' in history_record and isinstance(history_record['Clay Content Range (%)'], dict):
+        if 'Clay Content Range (%)' in history_record:
             clay_range = history_record.pop('Clay Content Range (%)')
             history_record.update({f"Clay ({k})": v for k, v in clay_range.items()})
 
